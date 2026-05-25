@@ -82,7 +82,7 @@
     \begin{column}{0.55\textwidth}
       \textbf{Edge nodes face two tight budgets.}
       \begin{itemize}\setlength{\itemsep}{2pt}
-        \item \textbf{Latency:} tens of milliseconds per request.
+        \item \textbf{Response time:} tens of milliseconds per request.
         \item \textbf{Resources:} 1--2\,GB RAM and few vCPUs.
       \end{itemize}
       \vspace{0.5em}
@@ -153,13 +153,36 @@
   \alert{WasmEdge has no baseline tier, no profile-driven promotion, and no mid-execution code replacement.}
 \end{frame}
 
+\begin{frame}{Related work}
+  \small
+  \textbf{Browser-engine Wasm pipelines.}
+  V8 pairs Liftoff and TurboFan. JavaScriptCore runs IPInt, BBQ, and OMG. SpiderMonkey runs Baseline and Ion.
+  All three use function-entry promotion.
+  Public documentation reports no OSR between the baseline JIT and the optimizing JIT.
+
+  \vspace{0.4em}
+  \textbf{Server-side Wasm pipelines.}
+  Wasmtime offers Cranelift (optimizing) and Winch (baseline).
+  The runtime does not currently tier up between them.
+
+  \vspace{0.4em}
+  \textbf{OSR in language VMs.}
+  HotSpot has supported OSR for over two decades.
+  .NET 7 added OSR in 2022 with the one-shot-caller motivation this thesis also targets.
+  Tracing JITs (PyPy, LuaJIT) sidestep OSR through trace recording.
+
+  \vspace{0.4em}
+  \alert{This thesis fills a gap.
+  No published server-side WebAssembly runtime combines a non-LLVM Sea-of-Nodes baseline, selective LLVM-frontend reuse, and loop-level OSR.}
+\end{frame}
+
 % ============================================================
 \section{Problem Statement and Contributions}
 % ============================================================
 
 \begin{frame}{Three sub-problems}
   \textbf{Goal.}
-  Cut startup latency without giving up the steady-state throughput that LLVM delivers on hot code.
+  Cut cold-start latency without giving up the steady-state throughput that LLVM delivers on hot code.
   \vspace{0.4em}
   \begin{description}\setlength{\itemsep}{0.5em}
     \item[\tone{} baseline.]
@@ -425,24 +448,24 @@
   \end{columns}
 \end{frame}
 
-\begin{frame}[fragile]{Three-state back-edge instrumentation}
+\begin{frame}{Three-state back-edge instrumentation}
   Each outermost loop reads one slot of \code{OsrEntryTable} on every back-edge.
-  The slot encodes a three-state machine: \textbf{counting} $\to$ \textbf{waiting} $\to$ \textbf{ready}.
-\begin{lstlisting}[language=C]
-slot = LOAD OsrEntryTable[loopId]
-if slot != WAITING:                  // sentinel 0
-  if slot == COUNTING:               // sentinel 1
-    counter = LOAD BackEdgeCounters[loopId]
-    if counter < threshold:          // unsigned!
-      counter += 1
-      STORE BackEdgeCounters[loopId] = counter
-      if counter == threshold: notify_osr(loopId)
-  else:                              // READY: slot holds an entry pointer
-    snapshot wasm locals into per-thread buffer
-    return slot(env, locals)         // tail-call the OSR entry
-fall through to the back-edge
-\end{lstlisting}
+  The slot encodes a three-state machine.
+
+  \vspace{0.6em}
+  \centering
+  \begin{tikzpicture}[font=\small,
+    state/.style={draw,rounded corners,minimum width=2.8cm,minimum height=14mm,align=center}]
+    \node[state,fill=tier1!15] (count) {\textbf{counting}\\runs back-edge\\counter};
+    \node[state,fill=ntugold!25,right=16mm of count] (wait) {\textbf{waiting}\\fast fall-through,\\three ops per iter};
+    \node[state,fill=osrcol!20,right=16mm of wait] (ready) {\textbf{ready}\\tail-call into\\OSR entry};
+    \draw[-{Latex},thick] (count) -- node[above,font=\scriptsize,align=center]{counter\\saturates} (wait);
+    \draw[-{Latex},thick] (wait) -- node[above,font=\scriptsize,align=center]{worker\\publishes} (ready);
+  \end{tikzpicture}
+
+  \vspace{0.8em}
   \textbf{Steady-state cost.} Three operations per iteration in the \emph{waiting} state. An earlier two-array design needed six.
+  Full pseudocode in the backup slides.
 \end{frame}
 
 \begin{frame}{OSR continuation entry synthesis}
@@ -492,7 +515,7 @@ fall through to the back-edge
     \item \textbf{Hot-leaf} (6): the threshold-tripper sits below the real hot work.
     \item \textbf{One-shot-caller} (7): outer function called once, dominated by one loop.
     \item \textbf{Resistant} (4): too little run-time or no inline opportunity.
-    \item \textbf{Compile-dominated} (6): LLVM compile cost dwarfs the wasm work.
+    \item \textbf{Compile-dominated} (7): LLVM compile cost dwarfs the wasm work.
   \end{itemize}
   \vspace{0.3em}
   \textbf{Baselines.} Whole-module LLVM JIT for the throughput ceiling; \tone{} alone for the latency floor.\\
@@ -619,8 +642,8 @@ fall through to the back-edge
     \code{spidermonkey-json}               & $\sim$9\,s & $\sim$90\,s & $\sim$10$\times$ \\
     \code{spidermonkey-markdown}           & $\sim$9\,s & $\sim$90\,s & $\sim$10$\times$ \\
     \code{spidermonkey-regex}              & $\sim$9\,s & $\sim$90\,s & $\sim$10$\times$ \\
-    \code{image-classification}            & --- & --- & 8.8$\times$ \\
-    \code{sqlite3}                         & --- & --- & 8.5$\times$ \\
+    \code{image-classification}            & 303\,ms   & 2\,667\,ms  & \textbf{8.8$\times$}  \\
+    \code{sqlite3}                         & 1\,985\,ms & 16\,953\,ms & \textbf{8.5$\times$}  \\
     \bottomrule
   \end{tabular}
 
@@ -704,7 +727,7 @@ fall through to the back-edge
 
 \begin{frame}{Summary}
   \footnotesize
-  This thesis presents a \textbf{tiered compilation architecture for WasmEdge} that separates startup latency from peak code quality.
+  This thesis presents a \textbf{tiered compilation architecture for WasmEdge} that separates cold-start latency from peak code quality.
 
   \vspace{0.3em}
   \textbf{Three design components.}
@@ -783,6 +806,90 @@ fall through to the back-edge
   \vspace{0.5em}
   No locks sit on the hot dispatch path.
   On the supported host architecture, the dispatch load already provides the ordering the design needs.
+\end{frame}
+
+\begin{frame}[fragile]{Backup: full pseudocode of the back-edge diamond}
+\begin{lstlisting}[language=C]
+slot = LOAD OsrEntryTable[loopId]
+if slot != WAITING:                  // sentinel 0
+  if slot == COUNTING:               // sentinel 1
+    counter = LOAD BackEdgeCounters[loopId]
+    if counter < threshold:          // unsigned!
+      counter += 1
+      STORE BackEdgeCounters[loopId] = counter
+      if counter == threshold: notify_osr(loopId)
+  else:                              // READY: slot holds an entry pointer
+    snapshot wasm locals into per-thread buffer
+    return slot(env, locals)         // tail-call the OSR entry
+fall through to the back-edge
+\end{lstlisting}
+  The unsigned comparison matters.
+  A signed comparison would treat the saturated value as negative and let the gate pass.
+  The counter would wrap and re-fire notification on every threshold-th invocation.
+\end{frame}
+
+\begin{frame}{Backup: threats to validity}
+  \small
+  \begin{itemize}\setlength{\itemsep}{3pt}
+    \item \textbf{Single-host measurement.}
+      All numbers from one 24-core workstation.
+      Behavior on production edge hosts is not measured.
+    \item \textbf{Three-run median.}
+      Not a tail-latency or p99 analysis.
+    \item \textbf{No CPU contention scenario.}
+      The worker thread runs on a dedicated core in the experiments.
+      Single-vCPU contention is acknowledged in the limitations but not measured.
+    \item \textbf{Sightglass-strong, not cross-runtime.}
+      The suite compares successive configurations of one runtime.
+      No cross-runtime claim is made.
+    \item \textbf{x86-64 only.}
+      The aarch64 port is not validated.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Backup: OSR lineage}
+  \small
+  \textbf{HotSpot pattern.}
+  A per-method back-edge counter triggers an OSR compile.
+  The OSR compile emits a method version whose entry point is the loop header.
+  Live state transfer uses a stack map.
+  HotSpot has supported OSR for over two decades.
+
+  \vspace{0.4em}
+  \textbf{.NET 7 (2022).}
+  Added OSR with the same one-shot-caller motivation this thesis targets.
+  The release notes describe methods called once that spend their run-time inside loops.
+
+  \vspace{0.4em}
+  \textbf{This thesis.}
+  Follows the HotSpot and .NET-7 lineage. Three simplifications:
+  \begin{itemize}\setlength{\itemsep}{1pt}
+    \item Restricted to outermost-loop back-edges.
+    \item Live state is the wasm-level local set, not a stack map.
+    \item Continuation is a fresh wasm function compiled through the LLVM frontend.
+  \end{itemize}
+  WebAssembly's structured control flow makes the simplifications safe.
+\end{frame}
+
+\begin{frame}{Backup: why dstogov/ir, not Cranelift}
+  \small
+  \textbf{Three reasons dstogov/ir fits the baseline tier role.}
+  \begin{itemize}\setlength{\itemsep}{3pt}
+    \item \textbf{Bounded, predictable compile latency.}
+      The library runs a fixed, linear pipeline with no pass manager.
+      Compile cost scales linearly with function size.
+    \item \textbf{SSA-quality output from a single-pass frontend.}
+      The IR is SSA by construction.
+      The thesis does not need a separate SSA-construction phase.
+    \item \textbf{Small enough to vendor and modify.}
+      The runtime can extend the library when a backend change is needed.
+  \end{itemize}
+
+  \vspace{0.4em}
+  \textbf{Why not Cranelift.}
+  Cranelift's pipeline targets higher code quality at higher compile cost.
+  Cranelift is closer to an optimizing tier than a baseline tier.
+  The codebase is also larger and harder to vendor.
 \end{frame}
 
 \begin{frame}{Backup: bibliography highlights}
