@@ -111,6 +111,7 @@
   \end{columns}
 \end{frame}
 
+% ============================================================
 \begin{frame}{The WasmEdge cold-start bottleneck}
   WasmEdge is the leading server-side Wasm runtime.
   Microsoft, ByteDance, and Sony all run WasmEdge in production.
@@ -130,10 +131,36 @@
   A single-tier compiler treats every invocation the same way.
   A request that runs for one microsecond pays the same compile cost as one that runs for one minute.
 
-  \vspace{0.3em}
-  \alert{A SpiderMonkey workload compiles for 90 seconds; the actual work takes 0.07 seconds.}
 \end{frame}
 
+% ============================================================
+\begin{frame}{Cold-start latency}
+  \begin{block}{Definition}
+    Time from request arrival to the first machine-code instruction of the requested wasm function. Assumes no ready-to-run compiled instance of the module is resident.
+  \end{block}
+
+  \vspace{0.3em}
+  \begin{columns}[T,onlytextwidth]
+    \begin{column}{0.48\textwidth}
+      \textbf{Inside the window}
+      \begin{itemize}\setlength{\itemsep}{1pt}
+        \item load, parse, validate
+        \item compile
+        \item instantiate
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{Outside the window}
+      \begin{itemize}\setlength{\itemsep}{1pt}
+        \item the wasm function's own execution
+        \item reported as steady-state work
+      \end{itemize}
+    \end{column}
+  \end{columns}
+
+\end{frame}
+
+% ============================================================
 \begin{frame}{Execution time is highly skewed}
   A small fraction of functions accounts for the bulk of run-time.
   \vspace{0.3em}
@@ -143,7 +170,7 @@
     \item Hot functions wait behind cold compilation before they can start.
   \end{itemize}
   \vspace{0.7em}
-  \textbf{The established remedy is tiered compilation.}
+  \textbf{The established solution is tiered compilation.}
   \begin{itemize}\setlength{\itemsep}{2pt}
     \item A \tone{} baseline compiles every function fast.
     \item A \ttwo{} optimizer recompiles hot functions later, guided by profile data.
@@ -153,6 +180,7 @@
   \alert{WasmEdge has no baseline tier, no profile-driven promotion, and no mid-execution code replacement.}
 \end{frame}
 
+% ============================================================
 \begin{frame}{Related work}
   \small
   \textbf{Browser-engine Wasm pipelines.}
@@ -200,22 +228,22 @@
   \end{description}
 \end{frame}
 
+% ============================================================
 \begin{frame}{Contributions}
   \small
   \begin{enumerate}\setlength{\itemsep}{0.5em}
     \item \textbf{\tone{} baseline JIT for WasmEdge.}\\
-      Integrates a lightweight Sea-of-Nodes library.
-      Uses one uniform calling convention for every function.
-      Embeds per-function and per-loop counters directly in compiled code.
+      Integrate a lightweight Sea-of-Nodes library.\\
+      Translate wasm bytecode to sea-of-nodes IR nodes.\\
+      Embed per-function and per-loop profile counters directly in compiled code.
     \item \textbf{\ttwo{} selective LLVM-frontend recompilation.}\\
-      Synthesizes a mini-module per batch.
-      Adds three ABI bridge thunks: \code{fwd\_thunk}, \code{t1\_thunk}, \code{entry\_thunk}.
-      Composes batches by walking up the call graph and admitting hot direct callees.
+      Design a heuristic to synthesizes a mini-module per batch.\\
+      Design three ABI bridge thunks to bridge the calling convention gap between the 2 tiers.
     \item \textbf{On-Stack Replacement.}\\
-      Instruments every outermost loop with a three-state back-edge diamond.
-      Synthesizes a continuation that starts execution at the loop header.
+      Instrument every outermost loop with a three-state back-edge diamond.\\
+      Synthesize a continuation that starts execution at the loop header.
     \item \textbf{Empirical evaluation.}\\
-      Reports a step-by-step ablation on 39 strengthened sightglass kernels.
+      Report and discuss a step-by-step experiment on 39 strengthened sightglass kernels.
   \end{enumerate}
 \end{frame}
 
@@ -224,7 +252,7 @@
 % ============================================================
 
 \begin{frame}{System architecture}
-  \vspace{-4mm}
+  \vspace{4mm}
   \centering
   \begin{tikzpicture}[
     font=\scriptsize,
@@ -262,11 +290,12 @@
 \begin{frame}{Pipeline at a glance}
   \begin{itemize}\setlength{\itemsep}{4pt}
     \item The user thread runs \tone{} native code and trips the embedded counters.
-    \item A worker thread serves \ttwo{} batches and OSR continuations off the critical path.
-    \item Two notification paths feed two queues: function-entry promotion and loop OSR.
-    \item The worker drains the OSR queue first. An OSR continuation must publish before the running loop exits.
+    \item A heuristic selects a batch of functions to promote to \ttwo{} and synthesizes a mini-module for the batch.
+    \item Two promotion paths feed two queues: function-entry promotion and loop OSR.
+    \item A worker thread compiles \ttwo{} batches and OSR continuations in the background.
+    %\item The worker drains the OSR queue first, as an OSR continuation must publish before the running loop exits.
     \item The worker publishes each result with one atomic store into the dispatch slot.
-    \item The pipeline coexists with the existing LLVM AOT path. Modules already compiled ahead of time skip \tone{}.
+    %\item The pipeline coexists with the existing LLVM AOT path. Modules already compiled ahead of time skip \tone{}.
   \end{itemize}
 \end{frame}
 
@@ -277,20 +306,22 @@
 \begin{frame}{Tier-1: a lightweight Sea-of-Nodes baseline}
   \textbf{Code generator: dstogov/ir.}
   A small Sea-of-Nodes JIT library, descended from the Zend JIT in PHP 8.
-  \begin{itemize}\setlength{\itemsep}{2pt}
+  \begin{itemize}\setlength{\itemsep}{1pt}
     \item The library runs a fixed, linear pipeline. No pass manager.
     \item Compile latency stays bounded and predictable.
     \item The codebase is small enough to vendor and modify.
   \end{itemize}
   \vspace{0.5em}
-  \textbf{Three design choices distinguish the proposed tier.}
-  \begin{enumerate}\setlength{\itemsep}{2pt}
-    \item Adopt the Sea-of-Nodes library as the code generator.
-    \item Translate wasm to IR in a single pass. The translator emits a PHI only for locals the loop actually modifies. Naive PHI-for-every-local inflates IR by an order of magnitude.
-    \item Embed profile counters directly inside compiled bodies. A saturated counter short-circuits in three IR operations.
-  \end{enumerate}
+  \textbf{Advantages of sea-of-nodes IR.}
+  \begin{itemize}\setlength{\itemsep}{1pt}
+    \item \textbf{SSA by construction.} Values are graph nodes. Definitions and uses are explicit edges. No separate SSA-construction phase.
+    \item \textbf{One graph for control flow and data.} A single traversal covers both. Passes do not need parallel analyses.
+    \item \textbf{Cheap global code motion.} Floating nodes let the scheduler choose placement after optimization.
+    %\item \textbf{Dead code is implicit.} Unreachable nodes are never scheduled. No explicit DCE pass is required.
+  \end{itemize}
 \end{frame}
 
+% ============================================================
 \begin{frame}{Calling convention and \texttt{JitExecEnv}}
   \small
   \textbf{Every \tone{} function takes the same two arguments.}
@@ -315,34 +346,32 @@
   \end{tabular}
   \end{center}
   \vspace{0.2em}
-  \scriptsize The worker thread writes only the \code{OsrEntryTable} pointer. The user thread owns every other field.
+  \scriptsize \code{JitExecEnv} points to shared tables; \ttwo{} publication updates \code{FuncTable} slots or \code{OsrEntryTable} slots.
 \end{frame}
 
 % ============================================================
 \section{Tier-2: Selective LLVM Recompilation}
 % ============================================================
-
-\begin{frame}{The core idea: mini-module synthesis}
-  \textbf{Reuse the LLVM frontend instead of rewriting it.}
-  The frontend is mature and already lowers every wasm construct WasmEdge needs.
-
+\begin{frame}{Batch composition: walk up, then bounded BFS}
+  \textbf{Promoting only the threshold-tripping function is not enough.}
+  The function that trips the counter is often a small leaf inside a larger hot caller.
+  A leaf promoted alone leaves its caller in \tone{}, so the optimizer cannot inline across the boundary.
   \vspace{0.3em}
-  \begin{block}{Mini-module synthesis (Algorithm 1)}
+  \begin{block}{Algorithm 2}
     \begin{enumerate}\setlength{\itemsep}{1pt}
-      \item Deep-copy the original wasm module.
-      \item Replace every defined function outside the batch with a small stub. The stub returns the function's declared type.
-      \item Run the LLVM frontend on the resulting mini-module.
+      \item \textbf{Walk up one hop.} Pick the hottest direct caller as the batch root.
+      \item \textbf{Bounded BFS.} Traverse direct callees from the root up to a depth limit and a batch size limit.
+      \item \textbf{Two-test admission} for each candidate callee:
+        \begin{itemize}\setlength{\itemsep}{0pt}
+          \item Dynamic test: the call counter exceeds zero.
+          \item Static test: the caller body references the callee at least twice.
+        \end{itemize}
     \end{enumerate}
   \end{block}
-
-  \vspace{0.3em}
-  \textbf{Why default returns and not traps?}
-  A trap stub looks non-returning to LLVM.
-  LLVM folds every call site into a trap and deletes the dispatch.
-  The post-processing pass then has no call site left to rewrite.
-  A default-return stub validates trivially and keeps every call site alive.
+  The static test admits siblings whose dynamic counters lag behind but that the optimizer will still benefit from seeing.
 \end{frame}
 
+% ============================================================
 \begin{frame}{Three ABI bridge thunks}
   \tone{} passes arguments in a flat 64-bit buffer.
   LLVM passes arguments in typed registers.
@@ -364,48 +393,25 @@
       Catches indirect calls from \ttwo{}, OSR, or AOT code that target a \tone{} function. \\
     \bottomrule
   \end{tabular}
-  \vspace{0.3em}
-  \scriptsize Each thunk handles one direction. Neither tier needs to know the other tier's ABI.
+  Each thunk handles one direction. Neither tier needs to know the other tier's ABI.
 \end{frame}
 
-\begin{frame}{The compile-ordering invariant}
-  \small
-  \textbf{Post-processing must run \emph{before} the LLVM optimizer.}
-  Reversing the order produces wrong code.
-  \vspace{0.4em}
-
-  \textbf{Why the order matters.}
-  Before post-processing installs the bridges, every non-batch stub looks pure to LLVM.
-  An aggressive pass inlines the stub's return constant into every call site and deletes the dispatch.
-  Post-processing then finds no call site to rewrite.
-
-  \vspace{0.4em}
-  \textbf{Correct sequence.}
-  \begin{enumerate}\setlength{\itemsep}{1pt}
-    \item Run the LLVM frontend unoptimized. Every call site survives.
-    \item Post-process: install \code{fwd\_thunk}s, rewrite stubs into \code{t1\_thunk}s, prune unused stubs.
-    \item Run the LLVM optimizer. The optimizer now sees real call targets.
-    \item Emit native code and publish the \code{fwd\_thunk} pointer into \code{FuncTable}.
-  \end{enumerate}
-\end{frame}
-
-\begin{frame}{Batch composition: walk up, then bounded BFS}
-  \textbf{Promoting only the threshold-tripping function is not enough.}
-  The function that trips the counter is often a small leaf inside a larger hot caller.
-  A leaf compiled alone still calls back into \tone{} on every helper, so the optimizer cannot inline across the boundary.
+% ============================================================
+\begin{frame}{Mini-module synthesis \& Promotion}
   \vspace{0.3em}
-  \begin{block}{Algorithm 2 (sketch)}
+  \begin{block}{Algorithm 1}
     \begin{enumerate}\setlength{\itemsep}{1pt}
-      \item \textbf{Walk up one hop.} Pick the hottest direct caller as the batch root.
-      \item \textbf{Bounded BFS.} Traverse direct callees from the root up to a depth limit and a batch size limit.
-      \item \textbf{Two-test admission} for each candidate callee:
-        \begin{itemize}\setlength{\itemsep}{0pt}
-          \item Dynamic test: the call counter exceeds zero.
-          \item Static test: the caller body references the callee at least twice.
-        \end{itemize}
+      \item Deep-copy the original wasm module.
+      \item Replace every defined function outside the batch with a small stub.
+      \item Run the LLVM frontend on the mini-module unoptimized.
+      \item Post-process the stubs with thunks, and prune unused stubs.
+      \item Run the LLVM optimizer on the mini-module.
+      \item Emit native code and publish the \code{fwd\_thunk} pointer into \code{FuncTable}.
     \end{enumerate}
   \end{block}
-  \scriptsize The static test admits siblings whose dynamic counters lag behind but that the optimizer will still benefit from seeing.
+
+  We run the LLVM frontend unoptimized before post-processing to preserve the call sites that post-processing rewrites into thunk calls.
+
 \end{frame}
 
 % ============================================================
@@ -422,32 +428,33 @@
       \vspace{0.5em}
       \textbf{Function-entry promotion delivers no speedup.}
       \begin{itemize}\setlength{\itemsep}{1pt}
-        \item The running \tone{} frame finishes the loop and returns.
-        \item The entry-table swap fires too late to matter.
-        \item No future call ever observes the swap.
+        \item Entry promotion redirects the next call to the function.
+        \item This function is called once. There is no next call.
+        \item The \tone{} frame keeps running the loop until return.
       \end{itemize}
 
-      \vspace{0.5em}
       \textbf{Measured at Step 2:}\\
       \code{shootout-ctype} 0.37$\times$ LLVM,\\
       \code{blind-sig} 0.40$\times$ LLVM.
     \end{column}
+    
     \begin{column}{0.42\textwidth}
       \centering
       \begin{tikzpicture}[font=\scriptsize,node distance=3mm]
         \node[draw,rounded corners,fill=tier1!15,minimum width=3.5cm] (call) {call $f$ (one time)};
         \node[draw,rounded corners,fill=tier1!15,below=of call,minimum width=3.5cm] (loop) {\textbf{loop} (99\% of run-time)};
-        \node[draw,rounded corners,fill=tier2!20,right=of loop,xshift=-2mm,minimum width=2cm] (swap) {entry swap};
+        \node[draw,rounded corners,fill=tier2!20,right=10mm of loop,minimum width=2cm] (swap) {entry swap};
         \node[draw,rounded corners,fill=tier1!15,below=of loop,minimum width=3.5cm] (ret) {return};
         \draw[-{Latex}] (call) -- (loop);
         \draw[-{Latex}] (loop) -- (ret);
-        \draw[->,dashed,tier2] (swap.west) -- (loop.east);
-        \node[below=of ret,font=\scriptsize\itshape,color=tier2] {swap arrives too late};
+        \draw[-{Latex[length=3mm,width=2.5mm]},dashed,tier2,very thick] (swap.west) -- (loop.east);
+        \node[below=of ret,font=\scriptsize\itshape,color=tier2] {no future call to redirect};
       \end{tikzpicture}
     \end{column}
   \end{columns}
 \end{frame}
 
+% ============================================================
 \begin{frame}{Three-state back-edge instrumentation}
   Each outermost loop reads one slot of \code{OsrEntryTable} on every back-edge.
   The slot encodes a three-state machine.
@@ -511,8 +518,8 @@
   \vspace{0.4em}
   \textbf{39 analyzed kernels group into five execution shapes.}
   \begin{itemize}\setlength{\itemsep}{1pt}
-    \item \textbf{Frequent-call} (16): one hot function called many times.
-    \item \textbf{Hot-leaf} (6): the threshold-tripper sits below the real hot work.
+    \item \textbf{Frequent-call} (17): one hot function called many times.
+    \item \textbf{Hot-leaf} (6): a small helper is called many times and becomes hot before the hot caller.
     \item \textbf{One-shot-caller} (7): outer function called once, dominated by one loop.
     \item \textbf{Resistant} (4): too little run-time or no inline opportunity.
     \item \textbf{Compile-dominated} (7): LLVM compile cost dwarfs the wasm work.
@@ -650,7 +657,7 @@
   \vspace{0.4em}
   \scriptsize
   \textbf{Why the wins cluster here.}
-  Each module embeds an interpreter, a reflection-driven dispatcher, or a graph of large tensor operators.
+  Each module is interpreter-shaped, reflection-heavy, host-bound, or dominated by large tensor operators.
   The source-to-wasm toolchain has already baked in the hot path, so LLVM cannot recover further speedup.
   Saving the LLVM compile cost is therefore pure win.
 \end{frame}
@@ -769,11 +776,11 @@
 \begin{frame}{Backup: workload categorization (39 kernels)}
   \scriptsize
   \begin{description}\setlength{\itemsep}{3pt}
-    \item[Frequent-call (16)] \code{blake3-scalar, bz2, gcc-loops, hashset, pulldown-cmark, quicksort, regex, shootout-gimli, shootout-heapsort, shootout-keccak, shootout-memmove, shootout-seqhash, shootout-sieve, shootout-switch, shootout-xblabla20, shootout-xchacha20, tinygo-regex}
+    \item[Frequent-call (17)] \code{blake3-scalar, bz2, gcc-loops, hashset, pulldown-cmark, quicksort, regex, shootout-gimli, shootout-heapsort, shootout-keccak, shootout-memmove, shootout-seqhash, shootout-sieve, shootout-switch, shootout-xblabla20, shootout-xchacha20, tinygo-regex}
     \item[Hot-leaf (6)] \code{blind-sig, rust-compression, rust-json, rust-protobuf, shootout-ctype, shootout-ed25519}
     \item[One-shot-caller (7)] \code{blind-sig, shootout-base64, shootout-ctype, shootout-matrix, shootout-minicsv, shootout-random, shootout-ratelimit}
     \item[Resistant (4)] \code{richards, rust-html-rewriter, shootout-fib2, shootout-nestedloop}
-    \item[Compile-dominated (6)] \code{image-classification, spidermonkey-json, spidermonkey-markdown, spidermonkey-regex, sqlite3, tinygo-json, tract-onnx-image-classification}
+    \item[Compile-dominated (7)] \code{image-classification, spidermonkey-json, spidermonkey-markdown, spidermonkey-regex, sqlite3, tinygo-json, tract-onnx-image-classification}
   \end{description}
   \vspace{0.3em}
   \code{shootout-ctype} and \code{blind-sig} sit in two groups. Both mechanisms must fire to close the gap.
@@ -834,8 +841,6 @@ fall through to the back-edge
     \item \textbf{Single-host measurement.}
       All numbers from one 24-core workstation.
       Behavior on production edge hosts is not measured.
-    \item \textbf{Three-run median.}
-      Not a tail-latency or p99 analysis.
     \item \textbf{No CPU contention scenario.}
       The worker thread runs on a dedicated core in the experiments.
       Single-vCPU contention is acknowledged in the limitations but not measured.
