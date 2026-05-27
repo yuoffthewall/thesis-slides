@@ -19,6 +19,7 @@
 \usepackage{xcolor}
 \usepackage{amsmath}
 \usepackage{calc}
+\usepackage{verbatim}
 
 \usetikzlibrary{shapes.geometric,arrows.meta,positioning,fit,backgrounds,calc}
 
@@ -255,25 +256,25 @@
   \vspace{4mm}
   \centering
   \begin{tikzpicture}[
-    font=\scriptsize,
+    font=\normalfont,
     box/.style={draw,rounded corners,minimum height=6mm,inner sep=2.5pt,align=center},
     t1/.style={box,fill=tier1!15},
     t2/.style={box,fill=tier2!15},
     osrb/.style={box,fill=osrcol!18},
     publ/.style={box,fill=ntugold!25},
-    note/.style={font=\tiny\itshape,color=neutral},
+    note/.style={font=\small\itshape,color=neutral},
     arr/.style={-{Latex},thick},
   ]
     \node[box,fill=black!8,minimum width=6cm] (mod) {Wasm module};
-    \node[t1,below=3mm of mod,minimum width=6cm] (comp1) {\tone{} compiler -- Sea-of-Nodes, per function};
-    \node[t1,below=4mm of comp1,xshift=-3cm,minimum width=4.8cm] (entry) {\tone{} native\\(function entry, call counter)};
-    \node[t1,below=4mm of comp1,xshift=3cm,minimum width=4.8cm] (loop)  {\tone{} native\\(OSR-instrumented loop)};
+    \node[t1,below=4mm of mod,minimum width=8cm] (comp1) {\tone{} compiler -- Sea-of-Nodes, per function};
+    \node[t1,below=5mm of comp1,xshift=-3cm,minimum width=5cm] (entry) {\tone{} native\\(function entry, call counter)};
+    \node[t1,below=5mm of comp1,xshift=3cm,minimum width=5cm] (loop)  {\tone{} native\\(OSR-instrumented loop)};
     \node[t2,below=7mm of entry,minimum width=4.8cm] (batchq) {\ttwo{} batch queue};
     \node[osrb,below=7mm of loop,minimum width=4.8cm] (osrq) {\osr{} queue (drains first)};
-    \node[box,fill=black!5,below=6mm of batchq.south,xshift=3cm,minimum width=11.5cm] (pipe)
+    \node[box,fill=black!5,below=6mm of batchq.south,xshift=3cm,minimum width=13.5cm] (pipe)
       {Compile pipeline:\, mini-module $\to$ LLVM frontend $\to$ thunks $\to$ optimize $\to$ JIT};
-    \node[publ,below=6mm of pipe,xshift=-3cm,minimum width=4.8cm] (ft)  {\code{FuncTable[i] $\leftarrow$ fwd\_thunk}};
-    \node[publ,below=6mm of pipe,xshift=3cm,minimum width=4.8cm] (osrt) {\code{OsrEntryTable[id] $\leftarrow$ OSR entry}};
+    \node[publ,below=7mm of pipe,xshift=-3cm,minimum width=5cm] (ft)  {\code{FuncTable[i] $\leftarrow$ fwd\_thunk}};
+    \node[publ,below=7mm of pipe,xshift=3cm,minimum width=5cm] (osrt) {\code{OsrEntryTable[id] $\leftarrow$ OSR entry}};
 
     \draw[arr] (mod) -- (comp1);
     \draw[arr] (comp1.south) -- (entry.north);
@@ -411,7 +412,6 @@
   \end{block}
 
   We run the LLVM frontend unoptimized before post-processing to preserve the call sites that post-processing rewrites into thunk calls.
-
 \end{frame}
 
 % ============================================================
@@ -419,39 +419,30 @@
 % ============================================================
 
 \begin{frame}{The one-shot-caller problem}
-  \begin{columns}[T,onlytextwidth]
-    \begin{column}{0.55\textwidth}
-      \small
-      \textbf{A function called once, spending its run-time inside one long loop.}\\
-      This is the shape of cryptographic kernels, parsing loops, and many serverless handlers.
+  \textbf{A function called once, spending its run-time inside one long loop.}\\
+  This is the shape of cryptographic kernels, parsing loops, and many serverless handlers.
 
-      \vspace{0.5em}
-      \textbf{Function-entry promotion delivers no speedup.}
-      \begin{itemize}\setlength{\itemsep}{1pt}
-        \item Entry promotion redirects the next call to the function.
-        \item This function is called once. There is no next call.
-        \item The \tone{} frame keeps running the loop until return.
-      \end{itemize}
+  \textbf{Function-entry promotion delivers no speedup.}
+  \begin{itemize}\setlength{\itemsep}{1pt}
+    \item Entry promotion redirects the next call to the function.
+    \item This function is called once. There is no next call.
+    \item The \tone{} frame keeps running the loop until return.
+  \end{itemize}
 
-      \textbf{Measured at Step 2:}\\
-      \code{shootout-ctype} 0.37$\times$ LLVM,\\
-      \code{blind-sig} 0.40$\times$ LLVM.
-    \end{column}
-    
-    \begin{column}{0.42\textwidth}
-      \centering
-      \begin{tikzpicture}[font=\scriptsize,node distance=3mm]
-        \node[draw,rounded corners,fill=tier1!15,minimum width=3.5cm] (call) {call $f$ (one time)};
-        \node[draw,rounded corners,fill=tier1!15,below=of call,minimum width=3.5cm] (loop) {\textbf{loop} (99\% of run-time)};
-        \node[draw,rounded corners,fill=tier2!20,right=10mm of loop,minimum width=2cm] (swap) {entry swap};
-        \node[draw,rounded corners,fill=tier1!15,below=of loop,minimum width=3.5cm] (ret) {return};
-        \draw[-{Latex}] (call) -- (loop);
-        \draw[-{Latex}] (loop) -- (ret);
-        \draw[-{Latex[length=3mm,width=2.5mm]},dashed,tier2,very thick] (swap.west) -- (loop.east);
-        \node[below=of ret,font=\scriptsize\itshape,color=tier2] {no future call to redirect};
-      \end{tikzpicture}
-    \end{column}
-  \end{columns}
+  \vspace{0.5em}
+  \centering
+    \begin{tikzpicture}[font=\normalfont, node distance=3mm]
+      \node[draw,rounded corners,fill=tier1!15,minimum width=3.5cm] (call) {call $f$ (one time)};
+      \node[draw,rounded corners,fill=tier1!15,below=of call,minimum width=4.5cm] (loop) {\textbf{loop} (99\% of run-time)};
+      \node[draw,rounded corners,fill=tier1!15,right=10mm of loop,minimum width=2cm] (swap) {entry swap};
+      \node[draw,rounded corners,fill=tier1!15,below=of loop,minimum width=3.5cm] (ret) {return};
+      \draw[-{Latex}] (call) -- (loop);
+      \draw[-{Latex}] (loop) -- (ret);
+      \draw[-{Latex[length=3mm,width=2.5mm]},dashed,tier2,very thick] (swap.west) -- (loop.east);
+      \node[below=of ret,font=\itshape,color=tier2] {no future call to redirect};
+    \end{tikzpicture}
+  
+  %\textbf{Measured at Step 2:} \code{shootout-ctype} 0.37$\times$ LLVM, \code{blind-sig} 0.40$\times$ LLVM.
 \end{frame}
 
 % ============================================================
@@ -461,13 +452,13 @@
 
   \vspace{0.6em}
   \centering
-  \begin{tikzpicture}[font=\small,
-    state/.style={draw,rounded corners,minimum width=2.8cm,minimum height=14mm,align=center}]
+  \begin{tikzpicture}[font=\normalfont, node distance=10mm,
+    state/.style={draw,rounded corners,minimum width=3cm,minimum height=18mm,align=center}]
     \node[state,fill=tier1!15] (count) {\textbf{counting}\\runs back-edge\\counter};
-    \node[state,fill=ntugold!25,right=16mm of count] (wait) {\textbf{waiting}\\fast fall-through,\\three ops per iter};
-    \node[state,fill=osrcol!20,right=16mm of wait] (ready) {\textbf{ready}\\tail-call into\\OSR entry};
-    \draw[-{Latex},thick] (count) -- node[above,font=\scriptsize,align=center]{counter\\saturates} (wait);
-    \draw[-{Latex},thick] (wait) -- node[above,font=\scriptsize,align=center]{worker\\publishes} (ready);
+    \node[state,fill=ntugold!25,right=18mm of count] (wait) {\textbf{waiting}\\fast fall-through,\\three ops per iter};
+    \node[state,fill=osrcol!20,right=18mm of wait] (ready) {\textbf{ready}\\tail-call into\\OSR entry};
+    \draw[-{Latex},thick] (count) -- node[above,font=\small,align=center]{counter\\saturates} (wait);
+    \draw[-{Latex},thick] (wait) -- node[above,font=\small,align=center]{worker\\publishes} (ready);
   \end{tikzpicture}
 
   \vspace{0.8em}
@@ -475,6 +466,7 @@
   Full pseudocode in the backup slides.
 \end{frame}
 
+% ============================================================
 \begin{frame}{OSR continuation entry synthesis}
   \textbf{The continuation reuses the mini-module mechanism with three changes.}
   \begin{enumerate}\setlength{\itemsep}{3pt}
@@ -483,25 +475,11 @@
     \item \textbf{Fresh function slot.} The continuation lives in a new slot. The original function stays untouched. Calls inside the continuation dispatch back to the original through \code{t1\_thunk}.
   \end{enumerate}
   \vspace{0.4em}
-  \begin{alertblock}{Structural bail-out}
-    Some loops cannot be safely re-entered mid-execution. The synthesis rejects those loops and the \tone{} path keeps running them correctly.
-  \end{alertblock}
-\end{frame}
-
-\begin{frame}{Why OSR continuations drain first}
-  \textbf{Two queues share one worker. The OSR queue has priority.}
-  \begin{itemize}\setlength{\itemsep}{2pt}
-    \item A \ttwo{} batch redirects \emph{future} calls. Late publication still helps.
-    \item An OSR continuation migrates a \emph{currently-running} frame.\\
-      The migration window closes when the running loop exits.
-    \item An OSR continuation that lands after the loop returns is a no-op.
-  \end{itemize}
-  \vspace{0.6em}
-  \textbf{Function-entry promotion and OSR operate independently.}
-  \begin{itemize}\setlength{\itemsep}{2pt}
-    \item The two mechanisms target different invocation shapes.
-    \item One function may be entry-promoted to \ttwo{} \emph{and} carry OSR continuations for its loops at the same time.
-  \end{itemize}
+  %\begin{alertblock}{Structural bail-out}
+  %  Some loops cannot be safely re-entered mid-execution. The synthesis rejects those loops and the \tone{} path keeps running them correctly.
+  %\end{alertblock}
+  \textbf{Two queues share one worker. The OSR queue is drained first.}\\
+  Because an OSR continuation must publish before the running loop exits.
 \end{frame}
 
 % ============================================================
@@ -524,11 +502,12 @@
     \item \textbf{Resistant} (4): too little run-time or no inline opportunity.
     \item \textbf{Compile-dominated} (7): LLVM compile cost dwarfs the wasm work.
   \end{itemize}
-  \vspace{0.3em}
-  \textbf{Baselines.} Whole-module LLVM JIT for the throughput ceiling; \tone{} alone for the latency floor.\\
-  \textbf{Metrics.} Work-time, compile time, end-to-end wall-clock.
+  %\vspace{0.3em}
+  %\textbf{Baselines.} Whole-module LLVM JIT for the throughput ceiling; \tone{} alone for the latency floor.\\
+  %\textbf{Metrics.} Work-time, compile time, end-to-end wall-clock.
 \end{frame}
 
+% ============================================================
 \begin{frame}{Three configurations, three steps}
   Each step turns on one mechanism on top of the previous step.
 
@@ -704,12 +683,20 @@
     \item[x86-64 only.]
       The current prototype runs on x86-64.
       The library backend supports aarch64, but no aarch64 port has been validated.
-    \item[Worker contention on small hosts.]
-      The evaluation used a 24-core workstation.
-      On a single-vCPU edge node, the worker competes with user code and erodes the wall-clock gain.
+    %\item[Worker contention on small hosts.]
+    %  The evaluation used a 24-core workstation.
+    %  On a single-vCPU edge node, the worker competes with user code and erodes the wall-clock gain.
   \end{description}
 \end{frame}
 
+% ============================================================
+\begin{comment}
+  \begin{frame}{Limitations: OSR entry synthesis}
+    \textbf{Structural bail-out.} Some loops cannot be safely re-entered mid-execution. The synthesis rejects those loops and the \tone{} path keeps running them correctly.
+
+    \vspace{0.5em}
+    \textbf{OSR entry parameter layout.} The continuation takes the original parameters and locals, flattened into one list. This layout is easy to synthesize but may not be optimal for all workloads.
+  \end{frame}
 \begin{frame}{Future work}
   \begin{description}\setlength{\itemsep}{0.6em}
     \item[SIMD lowering and wider promotion scope.]
@@ -727,16 +714,16 @@
       Use call-site frequencies, branch biases, and value profiles to shape each batch.
   \end{description}
 \end{frame}
+\end{comment}
 
 % ============================================================
 \section{Conclusion}
 % ============================================================
 
 \begin{frame}{Summary}
-  \footnotesize
+  \small
   This thesis presents a \textbf{tiered compilation architecture for WasmEdge} that separates cold-start latency from peak code quality.
 
-  \vspace{0.3em}
   \textbf{Three design components.}
   \begin{itemize}\setlength{\itemsep}{1pt}
     \item \tone{}: Sea-of-Nodes baseline JIT with embedded counters and a uniform calling convention.
@@ -744,13 +731,12 @@
     \item \osr{}: three-state back-edge diamond; continuation resumes a running frame mid-loop.
   \end{itemize}
 
-  \vspace{0.3em}
   \textbf{Headline results across 39 kernels.}
   \begin{itemize}\setlength{\itemsep}{1pt}
     \item Compile time: \textbf{11.1$\times$} faster than whole-module LLVM JIT.
     \item Steady-state throughput: \textbf{86\%} of LLVM JIT preserved.
     \item End-to-end wall-clock: \textbf{1.73$\times$} faster on average; up to 21.9$\times$ on \code{tinygo-json}.
-    \item OSR closes the one-shot-caller gap: \code{shootout-ctype} 0.37$\times$ $\to$ 0.88$\times$.
+    %\item OSR closes the one-shot-caller gap: \code{shootout-ctype} 0.37$\times$ $\to$ 0.88$\times$.
   \end{itemize}
 \end{frame}
 
