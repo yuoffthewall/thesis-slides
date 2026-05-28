@@ -323,6 +323,21 @@
 \end{frame}
 
 % ============================================================
+\begin{frame}{Tier-1: from wasm to native}
+  \small
+  Each wasm function is compiled at module instantiation. The pipeline runs one linear pass through five stages.
+
+  \vspace{0.4em}
+  \begin{enumerate}\setlength{\itemsep}{3pt}
+    \item \textbf{Walk the wasm body in source order.} For each instruction, pop operand IR refs off a value stack, emit IR nodes, push the result back.
+    \item \textbf{Single-pass SSA.} Locals become SSA values. PHIs appear only at loop headers, only for locals the loop modifies.
+    \item \textbf{Insert profile instrumentation.} The prologue increments a per-function call counter. Outermost loops get the three-state OSR diamond on every back-edge.
+    \item \textbf{Run the \code{dstogov/ir} backend.} Folding, value numbering, scheduling, register allocation, code emission.
+    \item \textbf{Publish.} Store the native entry pointer in \code{FuncTable[FuncIdx]}.
+  \end{enumerate}
+\end{frame}
+
+% ============================================================
 \section{Tier-2: Selective LLVM Recompilation}
 % ============================================================
 \begin{frame}{Batch composition: walk up, then bounded BFS}
