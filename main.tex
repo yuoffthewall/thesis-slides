@@ -323,34 +323,6 @@
 \end{frame}
 
 % ============================================================
-\begin{frame}{Calling convention and \texttt{JitExecEnv}}
-  \small
-  \textbf{Every \tone{} function takes the same two arguments.}
-  \[
-    f(\texttt{env}^{*},~\texttt{args}^{*}) \to \texttt{void}
-  \]
-  The args buffer holds one 64-bit slot per wasm parameter.
-  One dispatch shape covers wasm-defined functions, host imports, and indirect calls.
-
-  \vspace{0.4em}
-  \textbf{The \code{JitExecEnv} struct groups state into three sets.}
-  \begin{center}
-  \scriptsize
-  \begin{tabular}{ll}
-    \toprule
-    Group & Contents \\
-    \midrule
-    Lookup tables    & \code{FuncTable}, linear memory, globals, indirect-call shadow \\
-    Helper addresses & host call, memory growth, profile-saturation helpers \\
-    Promotion state  & call counters, back-edge counters, \code{OsrEntryTable}, OSR buffer \\
-    \bottomrule
-  \end{tabular}
-  \end{center}
-  \vspace{0.2em}
-  \scriptsize \code{JitExecEnv} points to shared tables; \ttwo{} publication updates \code{FuncTable} slots or \code{OsrEntryTable} slots.
-\end{frame}
-
-% ============================================================
 \section{Tier-2: Selective LLVM Recompilation}
 % ============================================================
 \begin{frame}{Batch composition: walk up, then bounded BFS}
@@ -758,36 +730,35 @@
 % ============================================================
 
 \appendix
+% ============================================================
+\begin{frame}{Calling convention and \texttt{JitExecEnv}}
+  \small
+  \textbf{Every \tone{} function takes the same two arguments.}
+  \[
+    f(\texttt{env}^{*},~\texttt{args}^{*}) \to \texttt{void}
+  \]
+  The args buffer holds one 64-bit slot per wasm parameter.
+  One dispatch shape covers wasm-defined functions, host imports, and indirect calls.
 
-\begin{frame}{Backup: workload categorization (39 kernels)}
+  \vspace{0.4em}
+  \textbf{The \code{JitExecEnv} struct groups state into three sets.}
+  \begin{center}
   \scriptsize
-  \begin{description}\setlength{\itemsep}{3pt}
-    \item[Frequent-call (17)] \code{blake3-scalar, bz2, gcc-loops, hashset, pulldown-cmark, quicksort, regex, shootout-gimli, shootout-heapsort, shootout-keccak, shootout-memmove, shootout-seqhash, shootout-sieve, shootout-switch, shootout-xblabla20, shootout-xchacha20, tinygo-regex}
-    \item[Hot-leaf (6)] \code{blind-sig, rust-compression, rust-json, rust-protobuf, shootout-ctype, shootout-ed25519}
-    \item[One-shot-caller (7)] \code{blind-sig, shootout-base64, shootout-ctype, shootout-matrix, shootout-minicsv, shootout-random, shootout-ratelimit}
-    \item[Resistant (4)] \code{richards, rust-html-rewriter, shootout-fib2, shootout-nestedloop}
-    \item[Compile-dominated (7)] \code{image-classification, spidermonkey-json, spidermonkey-markdown, spidermonkey-regex, sqlite3, tinygo-json, tract-onnx-image-classification}
-  \end{description}
-  \vspace{0.3em}
-  \code{shootout-ctype} and \code{blind-sig} sit in two groups. Both mechanisms must fire to close the gap.
+  \begin{tabular}{ll}
+    \toprule
+    Group & Contents \\
+    \midrule
+    Lookup tables    & \code{FuncTable}, linear memory, globals, indirect-call shadow \\
+    Helper addresses & host call, memory growth, profile-saturation helpers \\
+    Promotion state  & call counters, back-edge counters, \code{OsrEntryTable}, OSR buffer \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{0.2em}
+  \scriptsize \code{JitExecEnv} points to shared tables; \ttwo{} publication updates \code{FuncTable} slots or \code{OsrEntryTable} slots.
 \end{frame}
 
-\begin{frame}{Backup: why default returns instead of trap stubs}
-  \textbf{The earlier design used trap stubs inside the mini-module.}
-  LLVM responded in three steps:
-  \begin{itemize}\setlength{\itemsep}{2pt}
-    \item LLVM marked each trap stub as non-returning.
-    \item LLVM folded every call site that referenced a stub into a trap.
-    \item LLVM deleted the dispatch path the post-processing pass needed to rewrite.
-  \end{itemize}
-  \vspace{0.5em}
-  \textbf{Default returns avoid the chain.}
-  \begin{itemize}\setlength{\itemsep}{2pt}
-    \item Each stub returns the function's declared type. Validation succeeds.
-    \item Post-processing rewrites the stubs into \code{t1\_thunk}s before the optimizer runs. The call sites survive.
-  \end{itemize}
-\end{frame}
-
+% ============================================================
 \begin{frame}{Backup: scope of \texttt{JitExecEnv} writes}
   \textbf{Field ownership keeps cross-thread synchronization simple.}
   \begin{itemize}\setlength{\itemsep}{2pt}
@@ -801,6 +772,7 @@
   On the supported host architecture, the dispatch load already provides the ordering the design needs.
 \end{frame}
 
+% ============================================================
 \begin{frame}[fragile]{Backup: full pseudocode of the back-edge diamond}
 \begin{lstlisting}[language=C]
 slot = LOAD OsrEntryTable[loopId]
@@ -816,28 +788,9 @@ if slot != WAITING:                  // sentinel 0
     return slot(env, locals)         // tail-call the OSR entry
 fall through to the back-edge
 \end{lstlisting}
-  The unsigned comparison matters.
-  A signed comparison would treat the saturated value as negative and let the gate pass.
-  The counter would wrap and re-fire notification on every threshold-th invocation.
 \end{frame}
 
-\begin{frame}{Backup: threats to validity}
-  \small
-  \begin{itemize}\setlength{\itemsep}{3pt}
-    \item \textbf{Single-host measurement.}
-      All numbers from one 24-core workstation.
-      Behavior on production edge hosts is not measured.
-    \item \textbf{No CPU contention scenario.}
-      The worker thread runs on a dedicated core in the experiments.
-      Single-vCPU contention is acknowledged in the limitations but not measured.
-    \item \textbf{Sightglass-strong, not cross-runtime.}
-      The suite compares successive configurations of one runtime.
-      No cross-runtime claim is made.
-    \item \textbf{x86-64 only.}
-      The aarch64 port is not validated.
-  \end{itemize}
-\end{frame}
-
+% ============================================================
 \begin{frame}{Backup: OSR lineage}
   \small
   \textbf{HotSpot pattern.}
@@ -862,27 +815,21 @@ fall through to the back-edge
   WebAssembly's structured control flow makes the simplifications safe.
 \end{frame}
 
-\begin{frame}{Backup: why dstogov/ir, not Cranelift}
-  \small
-  \textbf{Three reasons dstogov/ir fits the baseline tier role.}
-  \begin{itemize}\setlength{\itemsep}{3pt}
-    \item \textbf{Bounded, predictable compile latency.}
-      The library runs a fixed, linear pipeline with no pass manager.
-      Compile cost scales linearly with function size.
-    \item \textbf{SSA-quality output from a single-pass frontend.}
-      The IR is SSA by construction.
-      The thesis does not need a separate SSA-construction phase.
-    \item \textbf{Small enough to vendor and modify.}
-      The runtime can extend the library when a backend change is needed.
-  \end{itemize}
-
-  \vspace{0.4em}
-  \textbf{Why not Cranelift.}
-  Cranelift's pipeline targets higher code quality at higher compile cost.
-  Cranelift is closer to an optimizing tier than a baseline tier.
-  The codebase is also larger and harder to vendor.
+% ============================================================
+\begin{frame}{Backup: workload categorization (39 kernels)}
+  \scriptsize
+  \begin{description}\setlength{\itemsep}{3pt}
+    \item[Frequent-call (17)] \code{blake3-scalar, bz2, gcc-loops, hashset, pulldown-cmark, quicksort, regex, shootout-gimli, shootout-heapsort, shootout-keccak, shootout-memmove, shootout-seqhash, shootout-sieve, shootout-switch, shootout-xblabla20, shootout-xchacha20, tinygo-regex}
+    \item[Hot-leaf (6)] \code{blind-sig, rust-compression, rust-json, rust-protobuf, shootout-ctype, shootout-ed25519}
+    \item[One-shot-caller (7)] \code{blind-sig, shootout-base64, shootout-ctype, shootout-matrix, shootout-minicsv, shootout-random, shootout-ratelimit}
+    \item[Resistant (4)] \code{richards, rust-html-rewriter, shootout-fib2, shootout-nestedloop}
+    \item[Compile-dominated (7)] \code{image-classification, spidermonkey-json, spidermonkey-markdown, spidermonkey-regex, sqlite3, tinygo-json, tract-onnx-image-classification}
+  \end{description}
+  \vspace{0.3em}
+  \code{shootout-ctype} and \code{blind-sig} sit in two groups. Both mechanisms must fire to close the gap.
 \end{frame}
 
+% ============================================================
 \begin{frame}{Backup: bibliography highlights}
   \footnotesize
   \begin{itemize}\setlength{\itemsep}{2pt}
