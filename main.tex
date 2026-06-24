@@ -22,6 +22,8 @@
 \usepackage{verbatim}
 
 \usetikzlibrary{shapes.geometric,arrows.meta,positioning,fit,backgrounds,calc}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
 
 \IfFileExists{beamerthememetropolis.sty}{%
   \usetheme{metropolis}
@@ -37,6 +39,9 @@
 \definecolor{tier2}{HTML}{E15759}
 \definecolor{osrcol}{HTML}{59A14F}
 \definecolor{neutral}{HTML}{555555}
+\definecolor{stepone}{HTML}{A0CBE8}
+\definecolor{steptwo}{HTML}{4E79A7}
+\definecolor{stepthree}{HTML}{59A14F}
 \setbeamercolor{frametitle}{bg=nturoyal,fg=white}
 
 \lstset{
@@ -61,7 +66,7 @@
 \subtitle{Master's Thesis Defense}
 \author[Hsiang-Yu Lee]{Hsiang-Yu Lee\,(李祥宇)\\\small Advisor: Prof.\ Shih-Wei Liao}
 \institute[NTU CSIE]{Department of Computer Science and Information Engineering\\National Taiwan University}
-\date{May 22, 2026}
+\date{June 25, 2026}
 
 \begin{document}
 
@@ -106,6 +111,7 @@
         \draw[-{Latex}] (load)--(comp);
         \draw[-{Latex}] (comp)--(exec);
         \draw[-{Latex}] (exec)--(tear);
+        %\draw[-{Latex},tier2,thick] (tear.east) -- ++(0.55,0) |- (comp.east);
       \end{tikzpicture}\\[2pt]
       \scriptsize Per-request lifecycle.
     \end{column}
@@ -181,29 +187,6 @@
   \alert{WasmEdge has no baseline tier, no profile-driven promotion, and no mid-execution code replacement.}
 \end{frame}
 
-% ============================================================
-\begin{frame}{Related work}
-  \small
-  \textbf{Browser-engine Wasm pipelines.}
-  V8 pairs Liftoff and TurboFan. JavaScriptCore runs IPInt, BBQ, and OMG. SpiderMonkey runs Baseline and Ion.
-  All three use function-entry promotion.
-  Public documentation reports no OSR between the baseline JIT and the optimizing JIT.
-
-  \vspace{0.4em}
-  \textbf{Server-side Wasm pipelines.}
-  Wasmtime offers Cranelift (optimizing) and Winch (baseline).
-  The runtime does not currently tier up between them.
-
-  \vspace{0.4em}
-  \textbf{OSR in language VMs.}
-  HotSpot has supported OSR for over two decades.
-  .NET 7 added OSR in 2022 with the one-shot-caller motivation this thesis also targets.
-  Tracing JITs (PyPy, LuaJIT) sidestep OSR through trace recording.
-
-  \vspace{0.4em}
-  \alert{This thesis fills a gap.
-  No published server-side WebAssembly runtime combines a non-LLVM Sea-of-Nodes baseline, selective LLVM-frontend reuse, and loop-level OSR.}
-\end{frame}
 
 % ============================================================
 \section{Problem Statement and Contributions}
@@ -238,8 +221,8 @@
       Translate wasm bytecode to sea-of-nodes IR nodes.\\
       Embed per-function and per-loop profile counters directly in compiled code.
     \item \textbf{\ttwo{} selective LLVM-frontend recompilation.}\\
-      Design a heuristic to synthesizes a mini-module per batch.\\
-      Design three ABI bridge thunks to bridge the calling convention gap between the 2 tiers.
+      Design a heuristic to synthesize a mini-module per batch.\\
+      Design three ABI bridge thunks to bridge the calling convention gap between the two tiers.
     \item \textbf{On-Stack Replacement.}\\
       Instrument every outermost loop with a three-state back-edge diamond.\\
       Synthesize a continuation that starts execution at the loop header.
@@ -252,6 +235,9 @@
 \section{Architecture Overview}
 % ============================================================
 
+
+
+% ============================================================
 \begin{frame}{System architecture}
   \vspace{4mm}
   \centering
@@ -288,6 +274,7 @@
   \end{tikzpicture}
 \end{frame}
 
+% ============================================================
 \begin{frame}{Pipeline at a glance}
   \begin{itemize}\setlength{\itemsep}{4pt}
     \item The user thread runs \tone{} native code and trips the embedded counters.
@@ -304,6 +291,53 @@
 \section{Tier-1: Baseline JIT}
 % ============================================================
 
+\begin{frame}{What is Sea-of-Nodes?}
+  A function becomes \textbf{one graph}: nodes are operations, edges are dependencies (data \emph{and} control). Most nodes \emph{float} until a late pass schedules them into blocks.
+  \vspace{0.2em}
+  \begin{columns}[T,onlytextwidth]
+    \begin{column}{0.47\textwidth}
+      \centering
+      {\small\textbf{Data:} \code{d = (a + b) * c}}\\[4pt]
+      \begin{tikzpicture}[font=\small,
+        op/.style={draw,circle,fill=tier1!20,minimum size=6.5mm,inner sep=0pt},
+        val/.style={draw,rounded corners,fill=black!5,inner sep=2.5pt}]
+        \node[val] (a) at (0,0) {a};
+        \node[val] (b) at (1.0,0) {b};
+        \node[val] (c) at (2.5,0) {c};
+        \node[op]  (add) at (0.5,-0.9) {$+$};
+        \node[op]  (mul) at (1.5,-1.8) {$\times$};
+        \node[val] (d) at (1.5,-2.7) {d};
+        \draw[-{Latex}] (a)--(add); \draw[-{Latex}] (b)--(add);
+        \draw[-{Latex}] (add)--(mul); \draw[-{Latex}] (c)--(mul);
+        \draw[-{Latex}] (mul)--(d);
+      \end{tikzpicture}\\[3pt]
+      {\scriptsize Each value is a node; edges are data deps.}
+    \end{column}
+    \begin{column}{0.47\textwidth}
+      \centering
+      {\small\textbf{Control + data:} \code{if p: x=1 else 2}}\\[4pt]
+      \begin{tikzpicture}[font=\small,
+        op/.style={draw,circle,fill=tier1!20,minimum size=6.5mm,inner sep=0pt},
+        ctl/.style={draw,diamond,fill=osrcol!25,inner sep=0pt,minimum width=1.4cm,minimum height=0.9cm,font=\scriptsize},
+        val/.style={draw,rounded corners,fill=black!5,inner sep=2.5pt}]
+        \node[ctl] (if) at (1.25,0) {if $p$};
+        \node[val] (x1) at (0,-0.85) {x=1};
+        \node[val] (x2) at (2.5,-0.85) {x=2};
+        \node[op]  (phi) at (1.25,-1.6) {$\phi$};
+        \node[op]  (add) at (1.25,-2.35) {\scriptsize$+10$};
+        \node[val] (y) at (1.25,-3.1) {y};
+        \draw[-{Latex}] (if)--(x1); \draw[-{Latex}] (if)--(x2);
+        \draw[-{Latex}] (x1)--(phi); \draw[-{Latex}] (x2)--(phi);
+        \draw[-{Latex}] (phi)--(add); \draw[-{Latex}] (add)--(y);
+      \end{tikzpicture}\\[3pt]
+      {\scriptsize $\phi$ merges the two branch values --- SSA built in.}
+    \end{column}
+  \end{columns}
+  \vspace{0.1em}
+  %{\small\alert{Why we use it: free SSA, plus loop-invariant motion and dead-code elimination from the scheduler.}}
+\end{frame}
+
+% ============================================================
 \begin{frame}{Tier-1: a lightweight Sea-of-Nodes baseline}
   \textbf{Code generator: dstogov/ir.}
   A small Sea-of-Nodes JIT library, descended from the Zend JIT in PHP 8.
@@ -325,67 +359,32 @@
 % ============================================================
 \begin{frame}{Tier-1: from wasm to native}
   \small
-  Each wasm function is compiled at module instantiation. The pipeline runs one linear pass through five stages.
+  Each wasm function is compiled at module instantiation, in three phases.
+
+  \vspace{0.3em}
+  \textbf{Phase 1 --- one forward walk over the body} \emph{(interleaved, per instruction):}
+  \begin{itemize}\setlength{\itemsep}{2pt}
+    \item \textbf{Operand stack.} Model the wasm value stack as a stack of IR refs: pop operands, emit a node, push the result.
+    \item \textbf{Locals $\to$ SSA.} Track each local's current node; \code{local.get} reads it, \code{local.set} updates it. PHIs only at loop headers, only for loop-modified locals.
+    \item \textbf{Instrumentation.} Prologue call counter; three-state OSR diamond on each outermost-loop back-edge.
+  \end{itemize}
+  \hfill$\Rightarrow$ a complete Sea-of-Nodes SSA graph.
 
   \vspace{0.4em}
-  \begin{enumerate}\setlength{\itemsep}{3pt}
-    \item \textbf{Walk the wasm body in source order.} For each instruction, pop operand IR refs off a value stack, emit IR nodes, push the result back.
-    \item \textbf{Single-pass SSA.} Locals become SSA values. PHIs appear only at loop headers, only for locals the loop modifies.
-    \item \textbf{Insert profile instrumentation.} The prologue increments a per-function call counter. Outermost loops get the three-state OSR diamond on every back-edge.
-    \item \textbf{Run the \code{dstogov/ir} backend.} Folding, value numbering, scheduling, register allocation, code emission.
-    \item \textbf{Publish.} Store the native entry pointer in \code{FuncTable[FuncIdx]}.
-  \end{enumerate}
+  \textbf{Phase 2 --- \code{dstogov/ir} backend.} Fold / value-number, constant propagation, global code motion, scheduling, register allocation, code emission.
+
+  \vspace{0.3em}
+  \textbf{Phase 3 --- publish.} Store the native entry pointer in \code{FuncTable[FuncIdx]}.
 \end{frame}
 
 % ============================================================
 \section{Tier-2: Selective LLVM Recompilation}
 % ============================================================
-\begin{frame}{Batch composition: walk up, then bounded BFS}
-  \textbf{Promoting only the threshold-tripping function is not enough.}
-  The function that trips the counter is often a small leaf inside a larger hot caller.
-  A leaf promoted alone leaves its caller in \tone{}, so the optimizer cannot inline across the boundary.
-  \vspace{0.3em}
-  \begin{block}{Algorithm 2}
-    \begin{enumerate}\setlength{\itemsep}{1pt}
-      \item \textbf{Walk up one hop.} Pick the hottest direct caller as the batch root.
-      \item \textbf{Bounded BFS.} Traverse direct callees from the root up to a depth limit and a batch size limit.
-      \item \textbf{Two-test admission} for each candidate callee:
-        \begin{itemize}\setlength{\itemsep}{0pt}
-          \item Dynamic test: the call counter exceeds zero.
-          \item Static test: the caller body references the callee at least twice.
-        \end{itemize}
-    \end{enumerate}
-  \end{block}
-  The static test admits siblings whose dynamic counters lag behind but that the optimizer will still benefit from seeing.
-\end{frame}
-
-% ============================================================
-\begin{frame}{Three ABI bridge thunks}
-  \tone{} passes arguments in a flat 64-bit buffer.
-  LLVM passes arguments in typed registers.
-  Three thunks bridge the mismatch, one per direction of cross-tier dispatch.
-  \vspace{0.3em}
-  \small
-  \begin{tabular}{@{}p{2.2cm} p{2.4cm} p{8.7cm}@{}}
-    \toprule
-    Thunk & Direction & Role \\
-    \midrule
-    \code{fwd\_thunk}   & \tone{}$\to$\ttwo{} &
-      Lives in \code{FuncTable} after publication.
-      Repacks \tone{} arguments into typed parameters and calls the \ttwo{} body. \\[2pt]
-    \code{t1\_thunk}    & \ttwo{}$\to$\tone{} &
-      Replaces a non-batch stub body inside the mini-module.
-      Repacks typed arguments back into the \tone{} buffer and dispatches under the \tone{} convention. \\[2pt]
-    \code{entry\_thunk} & LLVM$\to$\tone{} &
-      Sits in front of every \tone{} function.
-      Catches indirect calls from \ttwo{}, OSR, or AOT code that target a \tone{} function. \\
-    \bottomrule
-  \end{tabular}
-  Each thunk handles one direction. Neither tier needs to know the other tier's ABI.
-\end{frame}
-
-% ============================================================
 \begin{frame}{Mini-module synthesis \& Promotion}
+  \small
+  \textbf{Tier-2 compiles a batch.}
+  A batch is a small set of hot or hot-adjacent functions selected from the original module.
+  Functions outside the batch become stubs. Thunks later rewrite those stubs into cross-tier calls.
   \vspace{0.3em}
   \begin{block}{Algorithm 1}
     \begin{enumerate}\setlength{\itemsep}{1pt}
@@ -399,6 +398,52 @@
   \end{block}
 
   We run the LLVM frontend unoptimized before post-processing to preserve the call sites that post-processing rewrites into thunk calls.
+\end{frame}
+
+% ============================================================
+\begin{frame}{Three ABI bridge thunks}
+  \tone{} passes arguments in a flat 64-bit buffer.
+  LLVM passes arguments in typed registers.
+  Three thunks bridge the mismatch, one per direction of cross-tier dispatch.
+  
+  \vspace{0.3em}
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}p{2.0cm} p{3.4cm} p{6.0cm}@{}}
+    \toprule
+    Thunk & Reached via & Role \\
+    \midrule
+    \code{fwd\_thunk} & \tone{} via \code{FuncTable} slot &
+      Repacks the flat buffer into typed params, then calls the \ttwo{} body. \\[2pt]
+    \code{t1\_thunk} & \ttwo{} \textbf{direct} call (by name) &
+      The rewritten non-batch stub; repacks typed args back into the \tone{} buffer. \\[2pt]
+    \code{entry\_thunk} & LLVM \textbf{indirect} call (by pointer) &
+      The \tone{} function's table entry; catches \code{call\_indirect} from \ttwo{}/OSR/AOT. \\
+    \bottomrule
+  \end{tabular}
+
+  Each thunk handles one direction. Neither tier needs to know the other tier's ABI.
+\end{frame}
+
+% ============================================================
+\begin{frame}{Batch composition: walk up + BFS}
+  \textbf{Promoting only the threshold-tripping function is not enough.}
+  The function that trips the counter is often a small leaf inside a larger hot caller.
+  A leaf promoted alone leaves its caller in \tone{}, so the optimizer cannot inline across the boundary.
+  \vspace{0.3em}
+  \begin{block}{Algorithm 2}
+    \begin{enumerate}\setlength{\itemsep}{1pt}
+      \item \textbf{Walk up one hop.} Pick the hottest direct caller as the batch root.
+      \item \textbf{One-hop BFS.} Scan the root's direct callees. A batch size limit caps the count.
+      \item \textbf{Two-test admission} for each candidate callee:
+        \begin{itemize}\setlength{\itemsep}{0pt}
+          \item Dynamic test: call counter $>$ 0 --- filters dead code (never called).
+          \item Static test: caller references the callee $\geq$ 2 --- filters one-off helpers (init/cleanup).
+        \end{itemize}
+        A callee joins the batch if \emph{either} test passes.
+    \end{enumerate}
+  \end{block}
+  %The static test admits siblings whose dynamic counters lag behind but that the optimizer will still benefit from seeing.
 \end{frame}
 
 % ============================================================
@@ -449,24 +494,8 @@
   \end{tikzpicture}
 
   \vspace{0.8em}
-  \textbf{Steady-state cost.} Three operations per iteration in the \emph{waiting} state. An earlier two-array design needed six.
-  Full pseudocode in the backup slides.
-\end{frame}
-
-% ============================================================
-\begin{frame}{OSR continuation entry synthesis}
-  \textbf{The continuation reuses the mini-module mechanism with three changes.}
-  \begin{enumerate}\setlength{\itemsep}{3pt}
-    \item \textbf{Parameter list.} The new function takes the original parameters and the original locals, flattened into one list. The caller passes the running frame's state in through the call.
-    \item \textbf{Function body.} The body opens the enclosing control constructs, then resumes the original instruction stream from the loop header.
-    \item \textbf{Fresh function slot.} The continuation lives in a new slot. The original function stays untouched. Calls inside the continuation dispatch back to the original through \code{t1\_thunk}.
-  \end{enumerate}
-  \vspace{0.4em}
-  %\begin{alertblock}{Structural bail-out}
-  %  Some loops cannot be safely re-entered mid-execution. The synthesis rejects those loops and the \tone{} path keeps running them correctly.
-  %\end{alertblock}
-  \textbf{Two queues share one worker. The OSR queue is drained first.}\\
-  Because an OSR continuation must publish before the running loop exits.
+  %\textbf{Steady-state cost.} Three operations per iteration in the \emph{waiting} state.
+  The tier-2 promotion queue and the OSR promotion queue share one worker. The OSR queue is drained first.
 \end{frame}
 
 % ============================================================
@@ -520,62 +549,77 @@
   \end{itemize}
 \end{frame}
 
-\begin{frame}{Step 2: walk-up rescues hot-leaf kernels}
-  Step 1 batched only the leaf that tripped the counter.
-  The optimizer had nothing big enough to inline into.
-  Step 2 rolls the surrounding caller into the batch.
-
-  \vspace{0.4em}
-  \centering
+% ============================================================
+\begin{frame}{Step 2: walk-up + BFS}
   \small
-  \begin{tabular}{lccc}
-    \toprule
-    Kernel & Step 1 \code{LLVM/t2} & Step 2 \code{LLVM/t2} & swing \\
-    \midrule
-    \code{hashset}          & 0.62$\times$ & 0.84$\times$ & +0.22 \\
-    \code{shootout-ed25519} & 0.38$\times$ & 0.58$\times$ & +0.20 \\
-    \code{rust-json}        & 0.62$\times$ & 0.75$\times$ & +0.13 \\
-    \code{rust-compression} & 0.75$\times$ & 0.87$\times$ & +0.12 \\
-    \code{regex}            & 0.85$\times$ & 0.95$\times$ & +0.10 \\
-    \code{pulldown-cmark}   & 0.75$\times$ & 0.84$\times$ & +0.09 \\
-    \code{gcc-loops}        & 0.74$\times$ & 0.83$\times$ & +0.09 \\
-    \bottomrule
-  \end{tabular}
+  Step 1 batched only the leaf that tripped the counter. Step 2 rolls the surrounding caller into the batch.
 
-  \vspace{0.4em}
-  \scriptsize
-  \textbf{Two groups still lag after Step 2.}
-  One-shot-caller kernels (\code{shootout-ctype} 0.37$\times$, \code{blind-sig} 0.40$\times$) need OSR.
-  Compile-dominated kernels have flat steady-state; end-to-end wall-clock is the right metric for them.
+  \vspace{0.2em}
+  \centering
+  \begin{tikzpicture}
+  \begin{axis}[
+    xbar, bar width=6pt,
+    width=0.82\textwidth, height=5.6cm,
+    xmin=0, xmax=1.14, ymin=0.4, ymax=7.6,
+    ytick={1,2,3,4,5,6,7},
+    yticklabels={\texttt{gcc-loops},\texttt{pulldown-cmark},\texttt{regex},\texttt{rust-compression},\texttt{rust-json},\texttt{shootout-ed25519},\texttt{hashset}},
+    yticklabel style={font=\scriptsize},
+    xlabel={\texttt{LLVM/t2} (higher is better; 1.0 $=$ LLVM JIT)},
+    xlabel style={font=\scriptsize},
+    xtick={0,0.2,0.4,0.6,0.8,1.0}, xticklabel style={font=\scriptsize},
+    nodes near coords={\pgfmathprintnumber[fixed,fixed zerofill,precision=2]{\pgfplotspointmeta}},
+    nodes near coords style={font=\tiny},
+    legend style={at={(0.5,1.03)}, anchor=south, legend columns=2, font=\scriptsize, draw=black!40},
+    enlarge y limits=false,
+  ]
+  \addplot[draw=black!50, fill=stepone] coordinates {(0.62,7)(0.38,6)(0.62,5)(0.75,4)(0.85,3)(0.75,2)(0.74,1)};
+  \addplot[draw=black!50, fill=steptwo] coordinates {(0.84,7)(0.58,6)(0.75,5)(0.87,4)(0.95,3)(0.84,2)(0.83,1)};
+  \draw[dashed, black!60] (axis cs:1,0.4) -- (axis cs:1,7.6);
+  \legend{Step 1, Step 2}
+  \end{axis}
+  \end{tikzpicture}
+
+  \vspace{0.2em}
+  \small
+  \textbf{Still lagging:} one-shot-caller kernels (\code{shootout-ctype} 0.37$\times$, \code{blind-sig} 0.40$\times$) need OSR (Step 3).
 \end{frame}
 
+% ============================================================
 \begin{frame}{Step 3: OSR closes the one-shot-caller gap}
+  \small
   The seven kernels with the largest Step\,2 $\to$ Step\,3 jump all sit in the one-shot-caller group.
 
-  \vspace{0.4em}
+  \vspace{0.2em}
   \centering
-  \small
-  \begin{tabular}{lccc}
-    \toprule
-    Kernel & Step 2 \code{LLVM/t2} & Step 3 \code{LLVM/t2} & swing \\
-    \midrule
-    \code{shootout-ctype}     & 0.37$\times$ & \textbf{0.88$\times$} & +0.51 \\
-    \code{blind-sig}          & 0.40$\times$ & \textbf{0.80$\times$} & +0.40 \\
-    \code{shootout-random}    & 0.63$\times$ & 1.00$\times$ & +0.37 \\
-    \code{shootout-base64}    & 0.78$\times$ & 0.99$\times$ & +0.21 \\
-    \code{shootout-matrix}    & 0.75$\times$ & 0.95$\times$ & +0.20 \\
-    \code{shootout-ratelimit} & 0.79$\times$ & 0.96$\times$ & +0.17 \\
-    \code{shootout-minicsv}   & 0.79$\times$ & 0.95$\times$ & +0.16 \\
-    \bottomrule
-  \end{tabular}
+  \begin{tikzpicture}
+  \begin{axis}[
+    xbar, bar width=6pt,
+    width=0.82\textwidth, height=5.6cm,
+    xmin=0, xmax=1.14, ymin=0.4, ymax=7.6,
+    ytick={1,2,3,4,5,6,7},
+    yticklabels={\texttt{shootout-minicsv},\texttt{shootout-ratelimit},\texttt{shootout-matrix},\texttt{shootout-base64},\texttt{shootout-random},\texttt{blind-sig},\texttt{shootout-ctype}},
+    yticklabel style={font=\scriptsize},
+    xlabel={\texttt{LLVM/t2} (higher is better; 1.0 $=$ LLVM JIT)},
+    xlabel style={font=\scriptsize},
+    xtick={0,0.2,0.4,0.6,0.8,1.0}, xticklabel style={font=\scriptsize},
+    nodes near coords={\pgfmathprintnumber[fixed,fixed zerofill,precision=2]{\pgfplotspointmeta}},
+    nodes near coords style={font=\tiny},
+    legend style={at={(0.5,1.03)}, anchor=south, legend columns=2, font=\scriptsize, draw=black!40},
+    enlarge y limits=false,
+  ]
+  \addplot[draw=black!50, fill=steptwo] coordinates {(0.37,7)(0.40,6)(0.63,5)(0.78,4)(0.75,3)(0.79,2)(0.79,1)};
+  \addplot[draw=black!50, fill=stepthree] coordinates {(0.88,7)(0.80,6)(1.00,5)(0.99,4)(0.95,3)(0.96,2)(0.95,1)};
+  \draw[dashed, black!60] (axis cs:1,0.4) -- (axis cs:1,7.6);
+  \legend{Step 2, Step 3}
+  \end{axis}
+  \end{tikzpicture}
 
-  \vspace{0.4em}
-  \textbf{What happens at the swing.}
-  The loop's back-edge counter saturates while the loop is still running.
-  The worker compiles a continuation.
-  The next iteration tail-calls into LLVM-optimized code.
+  \vspace{0.2em}
+  \small
+  \textbf{At the swing:} the counter saturates mid-loop, and the worker's continuation runs the rest optimized.
 \end{frame}
 
+% ============================================================
 \begin{frame}{Compile time and end-to-end wall-clock}
   \textbf{Compile time.} How long the runtime spends compiling before steady state.\\
   \textbf{End-to-end wall-clock.} How long the user actually waits.
@@ -599,6 +643,7 @@
   \end{columns}
 \end{frame}
 
+% ============================================================
 \begin{frame}{The largest wall-clock wins}
   The wall-clock benefit is largest on compile-dominated workloads.
   These workloads are the real-world targets for the architecture.
@@ -628,6 +673,7 @@
   Saving the LLVM compile cost is therefore pure win.
 \end{frame}
 
+% ============================================================
 \begin{frame}{Where the tiered design loses ground}
   \textbf{Long-running synthetic kernels.}
   The \tone{} throughput gap is no longer offset by a meaningful cold-start saving.
@@ -714,7 +760,7 @@
   \textbf{Three design components.}
   \begin{itemize}\setlength{\itemsep}{1pt}
     \item \tone{}: Sea-of-Nodes baseline JIT with embedded counters and a uniform calling convention.
-    \item \ttwo{}: mini-module synthesis drives the LLVM frontend; three ABI bridge thunks; walk-up batch policy.
+    \item \ttwo{}: mini-module synthesis drives the LLVM recompilation; three ABI bridge thunks; walk-up batch policy.
     \item \osr{}: three-state back-edge diamond; continuation resumes a running frame mid-loop.
   \end{itemize}
 
@@ -727,6 +773,7 @@
   \end{itemize}
 \end{frame}
 
+% ============================================================
 \begin{frame}[plain]
   \centering
   \vfill
@@ -828,6 +875,30 @@ fall through to the back-edge
     \item Continuation is a fresh wasm function compiled through the LLVM frontend.
   \end{itemize}
   WebAssembly's structured control flow makes the simplifications safe.
+\end{frame}
+
+% ============================================================
+\begin{frame}{Related work}
+  \small
+  \textbf{Browser-engine Wasm pipelines.}
+  V8 pairs Liftoff and TurboFan. JavaScriptCore runs IPInt, BBQ, and OMG. SpiderMonkey runs Baseline and Ion.
+  All three use function-entry promotion.
+  Public documentation reports no OSR between the baseline JIT and the optimizing JIT.
+
+  \vspace{0.4em}
+  \textbf{Server-side Wasm pipelines.}
+  Wasmtime offers Cranelift (optimizing) and Winch (baseline).
+  The runtime does not currently tier up between them.
+
+  \vspace{0.4em}
+  \textbf{OSR in language VMs.}
+  HotSpot has supported OSR for over two decades.
+  .NET 7 added OSR in 2022 with the one-shot-caller motivation this thesis also targets.
+  Tracing JITs (PyPy, LuaJIT) sidestep OSR through trace recording.
+
+  \vspace{0.4em}
+  \alert{This thesis fills a gap.
+  No published server-side WebAssembly runtime combines a non-LLVM Sea-of-Nodes baseline, selective LLVM-frontend reuse, and loop-level OSR.}
 \end{frame}
 
 % ============================================================
